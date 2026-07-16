@@ -80,7 +80,8 @@ with st.sidebar:
 # =============================================================================
 # 2. DATABASE CONNECTION (GOOGLE SHEETS)
 # =============================================================================
-conn = st.connection("gsheets", type=st.connection.GSheetsConnection)
+conn = st.connection("gsheets", type=GSheetsConnection)
+#conn = st.connection("gsheets", type=st.connection.GSheetsConnection)
                      # if hasattr(st.connection, 'GSheetsConnection') else None)
 TRACKING_SHEET = "Progress"
 USER_SHEET = "user"
