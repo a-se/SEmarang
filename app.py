@@ -1,29 +1,86 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import date
-from streamlit_google_auth import Authenticate
+import requests
 
 st.set_page_config(page_title="PPL Monitoring - Koordinator View", page_icon="📝", layout="wide")
 
 # =============================================================================
-# 1. GOOGLE AUTHENTICATION LAYER
+# 1. FIXED GOOGLE OAUTH SECURITY LAYER (DIRECT EXCHANGE)
 # =============================================================================
-auth = Authenticate(secret_credentials_path=None)
-auth.check_authentification()
+client_id = st.secrets["google_auth"]["client_id"]
+client_secret = st.secrets["google_auth"]["client_secret"]
+redirect_uri = st.secrets["google_auth"]["redirect_uri"]
 
-if not st.session_state.get("connected", False):
+# Handle OAuth Callback Code from URL
+query_params = st.query_params
+if "code" in query_params and "user_email" not in st.session_state:
+    auth_code = query_params["code"]
+    
+    # Direct HTTP POST Exchange to avoid PKCE "Missing code verifier" mismatch
+    token_url = "https://oauth2.googleapis.com/token"
+    payload = {
+        "code": auth_code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+    
+    try:
+        token_response = requests.post(token_url, data=payload).json()
+        
+        if "access_token" in token_response:
+            access_token = token_response["access_token"]
+            
+            # Fetch user profile attributes using the access token
+            userinfo_url = "https://www.googleapis.com/oauth2/v2/userinfo"
+            headers = {"Authorization": f"Bearer {access_token}"}
+            user_info = requests.get(userinfo_url, headers=headers).json()
+            
+            st.session_state["user_email"] = user_info["email"].lower().strip()
+            st.session_state["user_name"] = user_info["name"]
+        else:
+            st.error(f"OAuth Exchange Error: {token_response.get('error_description', 'Token request failed')}")
+            
+    except Exception as e:
+        st.error(f"Gagal memproses login Google: {e}")
+    finally:
+        # Clear code from URL parameter bar to keep history clean
+        st.query_params.clear()
+
+# Enforce Authentication Guardrail
+if "user_email" not in st.session_state:
     st.title("🔐 Monitoring Progres Lapangan")
-    st.info("Silahkan login menggunakan Akun Google Koordinator Anda untuk mengakses sistem.")
+    st.write("Silahkan login menggunakan Akun Google Koordinator Anda untuk mengakses sistem.")
+    
+    # Build direct authorization link parameters
+    auth_uri = "https://accounts.google.com/o/oauth2/auth"
+    scopes = "openid https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email"
+    
+    login_url = f"{auth_uri}?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scopes}&prompt=select_account"
+    
+    st.link_button("🔑 Login dengan Akun Google", login_url, type="primary")
     st.stop()
 
-user_email = st.session_state.get("user_info", {}).get("email", "").lower().strip()
-user_name = st.session_state.get("user_info", {}).get("name", "")
+user_email = st.session_state["user_email"]
+user_name = st.session_state["user_name"]
+
+# Sidebar User Control Drawer
+with st.sidebar:
+    st.subheader("Profil Koordinator")
+    st.write(f"Nama: **{user_name}**")
+    st.write(f"Email: *{user_email}*")
+    st.markdown("---")
+    if st.button("🚪 Keluar / Log Out", use_container_width=True):
+        del st.session_state["user_email"]
+        del st.session_state["user_name"]
+        st.rerun()
 
 # =============================================================================
 # 2. DATABASE CONNECTION (GOOGLE SHEETS)
 # =============================================================================
-conn = st.connection("gsheets", type=GSheetsConnection)
+conn = st.connection("gsheets", type=st.connection.GSheetsConnection if hasattr(st.connection, 'GSheetsConnection') else None)
 TRACKING_SHEET = "Progress"
 USER_SHEET = "user"
 
@@ -44,27 +101,17 @@ if koordinator_matches.empty:
     st.error(f"❌ Akses Ditolak: Email Anda ({user_email}) tidak terdaftar sebagai Koordinator.")
     st.stop()
 
-# Get the clean identity name of the Koordinator
 nama_koordinator = koordinator_matches.iloc[0]['Koordinator']
-
-with st.sidebar:
-    st.subheader("Profil Koordinator")
-    st.write(f"Nama: **{nama_koordinator}**")
-    st.write(f"Email: *{user_email}*")
-    st.markdown("---")
-    if st.button("🚪 Keluar / Log Out", use_container_width=True):
-        auth.logout()
-        st.rerun()
 
 st.title(f"📊 Panel Input Koordinator: {nama_koordinator}")
 st.markdown("Silahkan tentukan PML dan PPL untuk menginput progres harian.")
 
-# Filter hierarchy dynamically based on this Koordinator
+# Filter hierarchy dynamic options arrays
 filtered_users = df_users[df_users['Koordinator'] == nama_koordinator]
 available_pml = sorted(filtered_users['PML'].dropna().unique().tolist())
 
 # =============================================================================
-# 4. INTERACTIVE ENTRY FORM
+# 4. INTERACTIVE ENTRY FORM GRID
 # =============================================================================
 col1, col2 = st.columns([1, 2])
 
@@ -105,7 +152,6 @@ with col2:
         if jumlah_input < 13 and not alasan_input.strip():
             st.error("❌ Gagal Mengirim: Karena progres di bawah target (< 13), kolom **Alasan** wajib diisi.")
         else:
-            # Locate the PPL row coordinate in the tracking sheet matrix (Column 3 = Nama PPL)
             ppl_match = df_raw[df_raw[3].astype(str).str.upper().str.strip() == selected_ppl.upper().strip()]
             
             if ppl_match.empty:
@@ -118,13 +164,11 @@ with col2:
                 if date_col_idx is None:
                     st.error(f"❌ Kolom tanggal harian untuk **{today_str}** belum dibuat oleh Admin di Google Sheet.")
                 else:
-                    # Update cell coordinates
                     df_raw.iloc[target_row, date_col_idx] = int(jumlah_input)
                     df_raw.iloc[target_row, date_col_idx + 1] = alasan_input.strip() if jumlah_input < 13 else "-"
                     
                     try:
                         conn.update(worksheet=TRACKING_SHEET, data=df_raw)
                         st.success(f"🎉 Sukses! Progres harian untuk PPL **{selected_ppl}** berhasil disimpan.")
-                        st.balloons()
                     except Exception as e:
                         st.error(f"Terjadi kesalahan saat memperbarui database: {e}")
