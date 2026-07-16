@@ -1,57 +1,66 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
-from google_auth_oauthlib.flow import Flow
-from google.auth.transport.requests import Request
-from google.oauth2 import id_token
 import requests
 
 st.set_page_config(page_title="PPL Monitoring - Koordinator View", page_icon="📝", layout="wide")
 
 # =============================================================================
-# 1. NATIVE NATIVE GOOGLE OAUTH SECURITY LAYER
+# 1. FIXED GOOGLE OAUTH SECURITY LAYER (DIRECT EXCHANGE)
 # =============================================================================
-# Load configurations from secrets
 client_id = st.secrets["google_auth"]["client_id"]
 client_secret = st.secrets["google_auth"]["client_secret"]
 redirect_uri = st.secrets["google_auth"]["redirect_uri"]
 
-client_config = {
-    "web": {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-    }
-}
-
-flow = Flow.from_client_config(
-    client_config,
-    scopes=["openid", "https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/userinfo.email"],
-    redirect_uri=redirect_uri
-)
-
-# Handle Callback Auth Code from Google Redirect
+# Handle OAuth Callback Code from URL
 query_params = st.query_params
 if "code" in query_params and "user_email" not in st.session_state:
+    auth_code = query_params["code"]
+    
+    # Direct HTTP POST Exchange to avoid PKCE "Missing code verifier" mismatch
+    token_url = "https://oauth2.googleapis.com/token"
+    payload = {
+        "code": auth_code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+    
     try:
-        flow.fetch_token(code=query_params["code"])
-        session = flow.authorized_session()
-        user_info = session.get("https://www.googleapis.com/oauth2/v2/userinfo").json()
-        st.session_state["user_email"] = user_info["email"].lower().strip()
-        st.session_state["user_name"] = user_info["name"]
-        # Clear code from URL safely
-        st.query_params.clear()
+        token_response = requests.post(token_url, data=payload).json()
+        
+        if "access_token" in token_response:
+            access_token = token_response["access_token"]
+            
+            # Fetch user profile attributes using the access token
+            userinfo_url = "https://www.googleapis.com/oauth2/v2/userinfo"
+            headers = {"Authorization": f"Bearer {access_token}"}
+            user_info = requests.get(userinfo_url, headers=headers).json()
+            
+            st.session_state["user_email"] = user_info["email"].lower().strip()
+            st.session_state["user_name"] = user_info["name"]
+        else:
+            st.error(f"OAuth Exchange Error: {token_response.get('error_description', 'Token request failed')}")
+            
     except Exception as e:
         st.error(f"Gagal memproses login Google: {e}")
+    finally:
+        # Clear code from URL parameter bar to keep history clean
+        st.query_params.clear()
 
 # Enforce Authentication Guardrail
 if "user_email" not in st.session_state:
     st.title("🔐 Monitoring Progres Lapangan")
     st.write("Silahkan login menggunakan Akun Google Koordinator Anda untuk mengakses sistem.")
     
-    auth_url, _ = flow.authorization_url(prompt="select_account")
-    st.link_button("🔑 Login dengan Akun Google", auth_url, type="primary")
+    # Build direct authorization link parameters
+    auth_uri = "https://accounts.google.com/o/oauth2/auth"
+    scopes = "openid https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email"
+    
+    login_url = f"{auth_uri}?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={scopes}&prompt=select_account"
+    
+    st.link_button("🔑 Login dengan Akun Google", login_url, type="primary")
     st.stop()
 
 user_email = st.session_state["user_email"]
@@ -69,9 +78,8 @@ with st.sidebar:
         st.rerun()
 
 # =============================================================================
-# 2. DATABASE CONNECTION USING THE CORRECT LIBRARY
+# 2. DATABASE CONNECTION (GOOGLE SHEETS)
 # =============================================================================
-# We call st.connection using the fixed backend string configuration identifier
 conn = st.connection("gsheets", type=st.connection.GSheetsConnection if hasattr(st.connection, 'GSheetsConnection') else None)
 TRACKING_SHEET = "Progress"
 USER_SHEET = "user"
