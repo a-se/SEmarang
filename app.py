@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 import requests
+from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="PPL Monitoring - Koordinator View", page_icon="📝", layout="wide")
 
@@ -80,13 +81,20 @@ with st.sidebar:
 # =============================================================================
 # 2. DATABASE CONNECTION (GOOGLE SHEETS)
 # =============================================================================
-conn = st.connection("gsheets", type=st.connection.GSheetsConnection if hasattr(st.connection, 'GSheetsConnection') else None)
-TRACKING_SHEET = "Progress"
-USER_SHEET = "user"
+# Inisialisasi koneksi gsheets menggunakan GSheetsConnection secara langsung
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Gunakan nomor indeks (integer) untuk membaca agar aman dari error 400
+TRACKING_INDEX = 0  # Tab ke-1 (Progress)
+USER_INDEX = 1      # Tab ke-2 (user)
+
+# Simpan nama asli tab dalam bentuk string khusus UNTUK proses UPDATE
+TRACKING_NAME_STR = "Progress"
 
 try:
-    df_raw = conn.read(worksheet=TRACKING_SHEET, header=None, ttl=0)
-    df_users = conn.read(worksheet=USER_SHEET, ttl=60)
+    # Membaca data mentah (header=None) agar sel gabungan (merged) bisa diproses manual di Python
+    df_raw = conn.read(worksheet=TRACKING_INDEX, header=None, ttl=0)
+    df_users = conn.read(worksheet=USER_INDEX, ttl=60)
     df_users['email'] = df_users['email'].str.lower().str.strip()
 except Exception as e:
     st.error(f"Gagal memuat database Google Sheets: {e}")
@@ -152,23 +160,43 @@ with col2:
         if jumlah_input < 13 and not alasan_input.strip():
             st.error("❌ Gagal Mengirim: Karena progres di bawah target (< 13), kolom **Alasan** wajib diisi.")
         else:
+            # Kolom indeks 3 di df_raw adalah nama PPL (Kolom D di Excel/Google Sheet)
             ppl_match = df_raw[df_raw[3].astype(str).str.upper().str.strip() == selected_ppl.upper().strip()]
             
             if ppl_match.empty:
-                st.error(f"❌ Nama PPL '{selected_ppl}' tidak ditemukan di lembar data '{TRACKING_SHEET}'.")
+                st.error(f"❌ Nama PPL '{selected_ppl}' tidak ditemukan di lembar data '{TRACKING_NAME_STR}'.")
             else:
                 target_row = ppl_match.index[0]
-                row_1_dates = df_raw.iloc[1].astype(str).tolist()
-                date_col_idx = next((i for i, cell in enumerate(row_1_dates) if today_str in cell), None)
+                
+                # Mengisi sel kosong karena merged cell pada Baris 0 (Tanggal) menggunakan ffill()
+                row_0_dates = df_raw.iloc[0].ffill().astype(str).tolist()
+                
+                # Mengambil Baris 1 (Sub-header 'Jumlah' / 'Alasan')
+                row_1_subheaders = df_raw.iloc[1].astype(str).str.strip().str.lower().tolist()
+                
+                date_col_idx = None
+                
+                # Cari kolom yang memuat tanggal hari ini pada Baris 0 DAN bernilai "jumlah" pada Baris 1
+                for i in range(len(row_0_dates)):
+                    if today_str in row_0_dates[i] and row_1_subheaders[i] == "jumlah":
+                        date_col_idx = i
+                        break
                 
                 if date_col_idx is None:
-                    st.error(f"❌ Kolom tanggal harian untuk **{today_str}** belum dibuat oleh Admin di Google Sheet.")
+                    st.error(f"❌ Kolom tanggal harian untuk **{today_str}** dengan sub-kolom 'Jumlah' belum dibuat oleh Admin di Google Sheet.")
                 else:
+                    # Update nilai "jumlah" di kolom ke-i (date_col_idx)
                     df_raw.iloc[target_row, date_col_idx] = int(jumlah_input)
-                    df_raw.iloc[target_row, date_col_idx + 1] = alasan_input.strip() if jumlah_input < 13 else "-"
                     
+                    # Update nilai "alasan" di kolom tepat di kanannya (indeks + 1) jika sub-headernya sesuai
+                    if date_col_idx + 1 < len(row_1_subheaders) and row_1_subheaders[date_col_idx + 1] == "alasan":
+                        df_raw.iloc[target_row, date_col_idx + 1] = alasan_input.strip() if jumlah_input < 13 else "-"
+                    else:
+                        st.warning("⚠️ Kolom sub-header 'Alasan' setelah kolom 'Jumlah' tidak ditemukan sesuai format.")
+                    
+                    # Kirim pembaruan kembali ke Google Sheets menggunakan nama string tab asli
                     try:
-                        conn.update(worksheet=TRACKING_SHEET, data=df_raw)
+                        conn.update(worksheet=TRACKING_NAME_STR, data=df_raw)
                         st.success(f"🎉 Sukses! Progres harian untuk PPL **{selected_ppl}** berhasil disimpan.")
                     except Exception as e:
                         st.error(f"Terjadi kesalahan saat memperbarui database: {e}")
