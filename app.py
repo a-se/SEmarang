@@ -90,11 +90,12 @@ USER_INDEX = 1      # Tab ke-2 (user)
 
 # Simpan nama asli tab dalam bentuk string khusus UNTUK proses UPDATE
 TRACKING_NAME_STR = "Progress"
+USER_NAME_STR = "user"
 
 try:
     # Membaca data mentah (header=None) agar sel gabungan (merged) bisa diproses manual di Python
-    df_raw = conn.read(worksheet=TRACKING_INDEX, header=None, ttl=0)
-    df_users = conn.read(worksheet=USER_INDEX, ttl=60)
+    df_raw = conn.read(worksheet=TRACKING_NAME_STR, header=None, ttl=0)
+    df_users = conn.read(worksheet=USER_NAME_STR, ttl=60)
     df_users['email'] = df_users['email'].str.lower().str.strip()
 except Exception as e:
     st.error(f"Gagal memuat database Google Sheets: {e}")
