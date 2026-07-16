@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 import requests
-from streamlit_gsheets import GSheetsConnection
+from streamlit_gsheets import GSheetsConnection  # 1. Pastikan library ini di-import langsung
+
 st.set_page_config(page_title="PPL Monitoring - Koordinator View", page_icon="📝", layout="wide")
 
 # =============================================================================
@@ -80,13 +81,13 @@ with st.sidebar:
 # =============================================================================
 # 2. DATABASE CONNECTION (GOOGLE SHEETS)
 # =============================================================================
+# 2. Inisialisasi koneksi gsheets menggunakan class GSheetsConnection secara langsung
 conn = st.connection("gsheets", type=GSheetsConnection)
-#conn = st.connection("gsheets", type=st.connection.GSheetsConnection)
-                     # if hasattr(st.connection, 'GSheetsConnection') else None)
 TRACKING_SHEET = "Progress"
 USER_SHEET = "user"
 
 try:
+    # Membaca sheet progress secara mentah tanpa header otomatis agar sel gabungan (merged) aman diproses manual
     df_raw = conn.read(worksheet=TRACKING_SHEET, header=None, ttl=0)
     df_users = conn.read(worksheet=USER_SHEET, ttl=60)
     df_users['email'] = df_users['email'].str.lower().str.strip()
@@ -154,20 +155,41 @@ with col2:
         if jumlah_input < 13 and not alasan_input.strip():
             st.error("❌ Gagal Mengirim: Karena progres di bawah target (< 13), kolom **Alasan** wajib diisi.")
         else:
+            # Kolom 3 (indeks 3) di df_raw adalah nama PPL
             ppl_match = df_raw[df_raw[3].astype(str).str.upper().str.strip() == selected_ppl.upper().strip()]
             
             if ppl_match.empty:
                 st.error(f"❌ Nama PPL '{selected_ppl}' tidak ditemukan di lembar data '{TRACKING_SHEET}'.")
             else:
                 target_row = ppl_match.index[0]
-                row_1_dates = df_raw.iloc[1].astype(str).tolist()
-                date_col_idx = next((i for i, cell in enumerate(row_1_dates) if today_str in cell), None)
+                
+                # 3. PENANGANAN HEADER TANGGAL (MERGED CELL)
+                # Pada skenario multi-row header Anda:
+                # Baris 0 (indeks ke-0) adalah baris gabungan ("date" / Tanggal)
+                # Baris 1 (indeks ke-1) adalah baris anak sub-kolom ("jumlah" dan "alasan")
+                row_0_dates = df_raw.iloc[0].ffill().astype(str).tolist() # Mengisi sel kosong karena merged cell dengan ffill()
+                row_1_subheaders = df_raw.iloc[1].astype(str).str.strip().str.lower().tolist()
+                
+                date_col_idx = None
+                
+                # Cari kolom yang memiliki tanggal hari ini pada Baris 0 DAN bernilai "jumlah" pada Baris 1
+                for i in range(len(row_0_dates)):
+                    if today_str in row_0_dates[i] and "jumlah" in row_1_subheaders[i]:
+                        date_col_idx = i
+                        break
                 
                 if date_col_idx is None:
-                    st.error(f"❌ Kolom tanggal harian untuk **{today_str}** belum dibuat oleh Admin di Google Sheet.")
+                    st.error(f"❌ Kolom tanggal harian untuk **{today_str}** dengan sub-kolom 'jumlah' belum dibuat oleh Admin di Google Sheet.")
                 else:
+                    # Update nilai "jumlah" di kolom ke-i (date_col_idx)
                     df_raw.iloc[target_row, date_col_idx] = int(jumlah_input)
-                    df_raw.iloc[target_row, date_col_idx + 1] = alasan_input.strip() if jumlah_input < 13 else "-"
+                    
+                    # Update nilai "alasan" di kolom tepat di kanannya (indeks + 1)
+                    # Pastikan kolom di kanannya benar-benar adalah kolom "alasan"
+                    if date_col_idx + 1 < len(row_1_subheaders) and "alasan" in row_1_subheaders[date_col_idx + 1]:
+                        df_raw.iloc[target_row, date_col_idx + 1] = alasan_input.strip() if jumlah_input < 13 else "-"
+                    else:
+                        st.warning("⚠️ Kolom alasan setelah kolom jumlah tidak ditemukan sesuai format.")
                     
                     try:
                         conn.update(worksheet=TRACKING_SHEET, data=df_raw)
