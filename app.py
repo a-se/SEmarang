@@ -83,8 +83,8 @@ with st.sidebar:
 # =============================================================================
 # 2. Inisialisasi koneksi gsheets menggunakan class GSheetsConnection secara langsung
 conn = st.connection("gsheets", type=GSheetsConnection)
-TRACKING_SHEET = "Progress"
-USER_SHEET = "user"
+TRACKING_SHEET = 0
+USER_SHEET = 1
 
 try:
     # Membaca sheet progress secara mentah tanpa header otomatis agar sel gabungan (merged) aman diproses manual
