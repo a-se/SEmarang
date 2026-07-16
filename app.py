@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 import requests
-
+from streamlit_gsheets import GSheetsConnection
 st.set_page_config(page_title="PPL Monitoring - Koordinator View", page_icon="📝", layout="wide")
 
 # =============================================================================
@@ -80,7 +80,8 @@ with st.sidebar:
 # =============================================================================
 # 2. DATABASE CONNECTION (GOOGLE SHEETS)
 # =============================================================================
-conn = st.connection("gsheets", type=st.connection.GSheetsConnection if hasattr(st.connection, 'GSheetsConnection') else None)
+conn = st.connection("gsheets", type=st.connection.GSheetsConnection)
+                     # if hasattr(st.connection, 'GSheetsConnection') else None)
 TRACKING_SHEET = "Progress"
 USER_SHEET = "user"
 
